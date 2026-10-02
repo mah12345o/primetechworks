@@ -147,6 +147,9 @@ export default function ClientModal({
 
       setFormData(initialFormData);
       setFieldErrors({});
+      if (!clientToEdit) {
+        router.push("/?page=1");
+      }
       router.refresh();
       onClose();
     } catch {

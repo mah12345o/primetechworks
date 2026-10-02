@@ -75,6 +75,26 @@ export default function AdminDashboard({
       );
     });
 
+    socket.on("userCreated", ({ user }: { user: any }) => {
+      setClientsList((prev) => [
+        {
+          _id: user.id || user._id,
+          name: user.name,
+          city: user.city,
+          email: user.email,
+          mobile: user.mobile,
+          amount: user.amount || 0,
+          role: user.role || "client",
+          createdAt: user.createdAt,
+        },
+        ...prev.filter((c) => c._id !== (user.id || user._id)),
+      ].slice(0, 6));
+    });
+
+    socket.on("userDeleted", ({ userId }: { userId: string }) => {
+      setClientsList((prev) => prev.filter((c) => c._id !== userId));
+    });
+
     return () => {
       socket.disconnect();
     };

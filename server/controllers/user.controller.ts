@@ -219,7 +219,7 @@ export const getAllUsers = async (
     const [users, total] = await Promise.all([
       User.find(query)
         .select("-password")
-        .sort({ createdAt: -1 })
+        .sort({ _id: -1 })
         .skip((page - 1) * limit)
         .limit(limit)
         .lean(),
