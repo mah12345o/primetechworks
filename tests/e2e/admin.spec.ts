@@ -21,7 +21,7 @@ test.describe("Admin Portal E2E Flow", () => {
 
     // 4. Add User
     await page.click('button:has-text("Add user")');
-    await expect(page.getByText("Add Client")).toBeVisible();
+    await expect(page.getByText("Add New Client")).toBeVisible();
 
     await page.fill('input[name="name"]', "E2E Test User");
     await page.fill('input[name="city"]', "Ahmedabad");
@@ -36,11 +36,12 @@ test.describe("Admin Portal E2E Flow", () => {
     // 5. Search User
     const searchInput = page.locator('input[type="search"]');
     await searchInput.fill("E2E Test User");
+    await page.waitForTimeout(500); // 300ms debounce buffer
     await expect(page.getByText("E2E Test User").first()).toBeVisible();
 
     // 6. Edit User
     const userRow = page.locator("tr", { hasText: "E2E Test User" });
-    await userRow.locator('button[aria-label*="Edit"]').click();
+    await userRow.getByRole("button", { name: /edit/i }).click();
     await expect(page.getByText("Edit Client")).toBeVisible();
 
     await page.fill('input[name="name"]', "E2E Test User Updated");
@@ -51,12 +52,12 @@ test.describe("Admin Portal E2E Flow", () => {
 
     // 7. Delete User
     const updatedRow = page.locator("tr", { hasText: "E2E Test User Updated" });
-    await updatedRow.locator('button[aria-label*="Delete"]').click();
+    await updatedRow.getByRole("button", { name: /delete/i }).click();
 
     // Confirm Delete Modal
     await expect(page.getByText("Delete Client")).toBeVisible();
-    const confirmDeleteBtn = page.locator('button:has-text("Delete")').last();
-    await confirmDeleteBtn.click();
+    const modal = page.locator('div[role="dialog"]');
+    await modal.getByRole("button", { name: /^delete$/i }).click();
 
     // Verify User Removed
     await expect(page.getByText("E2E Test User Updated")).toHaveCount(0);
