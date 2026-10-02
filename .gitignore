@@ -1,0 +1,17 @@
+# Dependencies
+node_modules/
+**/node_modules/
+
+# Environment Variables
+.env
+.env.*
+*.env
+**/.env
+**/.env.*
+
+# Build & Test Outputs
+test-results/
+playwright-report/
+dist/
+.next/
+coverage/
