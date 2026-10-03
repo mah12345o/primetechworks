@@ -95,7 +95,7 @@ export const createClient = async (formData: CreateClientFormData) => {
                 email: formData.email,
                 mobile: formData.mobile,
                 password: formData.password,
-                amount: 0,
+                amount: Number(formData.amount) || 0,
                 role: "client",
             }),
         });

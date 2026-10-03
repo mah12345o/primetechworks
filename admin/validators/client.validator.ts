@@ -60,6 +60,16 @@ export const createClientFormSchema = (isEdit: boolean) =>
           v.nonEmpty("Password is required"),
           v.minLength(8, "Password must be at least 8 characters")
         ),
+    amount: v.optional(
+      v.pipe(
+        v.string(),
+        v.trim(),
+        v.check(
+          (val) => !val || (!isNaN(Number(val)) && Number(val) >= 0),
+          "Amount must be a valid non-negative number"
+        )
+      )
+    ),
   });
 
 export function validateClientForm(
@@ -74,6 +84,7 @@ export function validateClientForm(
     email: string;
     mobile: string;
     password?: string;
+    amount?: string;
   };
 } {
   const schema = createClientFormSchema(isEdit);

@@ -114,13 +114,14 @@ export default function ClientModal({
         }
         res = await updateClient(clientToEdit._id, payload);
       } else {
+        const initialAmount = Number(formData.amount) || 0;
         res = await createClient({
           name: validatedData.name,
           city: validatedData.city,
           email: validatedData.email,
           mobile: validatedData.mobile,
           password: validatedData.password || "",
-          amount: 0,
+          amount: initialAmount,
         });
       }
 
@@ -171,7 +172,7 @@ export default function ClientModal({
       maxWidth="lg"
       error={error}
     >
-      <form onSubmit={handleSubmit} noValidate className="mt-5 space-y-4">
+      <form onSubmit={handleSubmit} noValidate autoComplete="off" className="mt-5 space-y-4">
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           {/* Full Name */}
           <div>
@@ -181,6 +182,7 @@ export default function ClientModal({
             <input
               type="text"
               name="name"
+              autoComplete="off"
               placeholder="e.g. John Doe"
               value={formData.name}
               onChange={handleChange}
@@ -205,6 +207,7 @@ export default function ClientModal({
             <input
               type="text"
               name="city"
+              autoComplete="off"
               placeholder="e.g. Mumbai"
               value={formData.city}
               onChange={handleChange}
@@ -230,6 +233,7 @@ export default function ClientModal({
           <input
             type="email"
             name="email"
+            autoComplete="off"
             placeholder="e.g. client@example.com"
             value={formData.email}
             onChange={handleChange}
@@ -255,6 +259,7 @@ export default function ClientModal({
             type="tel"
             name="mobile"
             maxLength={10}
+            autoComplete="off"
             placeholder="e.g. 9876543210 (10 digits)"
             value={formData.mobile}
             onChange={(e) => {
@@ -291,6 +296,7 @@ export default function ClientModal({
             <input
               type={showPassword ? "text" : "password"}
               name="password"
+              autoComplete="new-password"
               placeholder={clientToEdit ? "Leave blank to keep current password" : "•••••••• (min 8 chars)"}
               value={formData.password}
               onChange={handleChange}
@@ -433,6 +439,11 @@ export default function ClientModal({
                 className="w-full rounded-xl border border-zinc-300 bg-white py-2.5 pl-8 pr-3.5 text-sm text-zinc-900 placeholder:text-zinc-400 transition focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/20 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-50 dark:placeholder:text-zinc-500 dark:focus:border-blue-500"
               />
             </div>
+            {fieldErrors.amount && (
+              <p className="mt-1 text-xs font-medium text-red-500 dark:text-red-400">
+                {fieldErrors.amount}
+              </p>
+            )}
           </div>
         )}
 
