@@ -1,4 +1,5 @@
 import { Request, Response } from "express";
+import mongoose from "mongoose";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import User, { UserRole } from "../models/user.model.js";
@@ -39,9 +40,9 @@ function validateAmount(
   return { valid: true, value: rounded };
 }
 
-// Helper to reliably check MongoDB duplicate key errors (TOCTOU race condition)
+// Helper to reliably check MongoDB duplicate key errors (code 11000)
 function isDuplicateKeyError(err: any): boolean {
-  return err?.code === 11000 || err?.name === "MongoServerError";
+  return err?.code === 11000;
 }
 
 // Scoped room-based Socket.IO emission (strictly guards against broad data leaks)
@@ -61,7 +62,7 @@ function emitToTargetAndAdmins(
   }
 }
 
-// Financial audit trail logger
+// Financial audit trail logger (standalone/non-transactional)
 async function logTransaction(data: {
   userId: any;
   performedBy?: any;
@@ -78,12 +79,117 @@ async function logTransaction(data: {
   }
 }
 
+interface AdminTransferOptions {
+  adminId: string;
+  targetUserId: any;
+  targetUserName: string;
+  amount: number;
+  transactionType: TransactionType;
+  userBalanceBefore: number;
+  userBalanceAfter: number;
+  description: string;
+  session: mongoose.ClientSession;
+}
+
+/**
+ * Common Helper: Atomically deducts balance from Admin and writes double-entry transactions
+ * within an active MongoDB ACID session.
+ * Enforces atomic database-level constraint { amount: { $gte: amount } } to prevent negative balance and race conditions.
+ */
+async function transferBalanceFromAdmin(opts: AdminTransferOptions): Promise<number> {
+  const {
+    adminId,
+    targetUserId,
+    targetUserName,
+    amount,
+    transactionType,
+    userBalanceBefore,
+    userBalanceAfter,
+    description,
+    session,
+  } = opts;
+
+  // 1. Atomic Database Constraint Deduction
+  const updatedAdmin = await User.findOneAndUpdate(
+    {
+      _id: adminId,
+      role: UserRole.ADMIN,
+      amount: { $gte: amount }, // Database strictly enforces sufficient balance
+    },
+    { $inc: { amount: -amount } },
+    { new: true, session }
+  );
+
+  if (!updatedAdmin) {
+    const currentAdmin = await User.findById(adminId).session(session);
+    const available = currentAdmin?.amount ?? 0;
+    const err: any = new Error(
+      `Insufficient admin balance. Current admin balance is ₹${available.toLocaleString("en-IN")}, cannot deduct ₹${amount.toLocaleString("en-IN")}`
+    );
+    err.statusCode = 400;
+    throw err;
+  }
+
+  // 2. Double-entry Audit Ledger in same session
+  const adminBalBefore = updatedAdmin.amount + amount;
+  await Transaction.insertMany(
+    [
+      {
+        userId: adminId,
+        performedBy: adminId,
+        type: TransactionType.DEBIT,
+        amount,
+        balanceBefore: adminBalBefore,
+        balanceAfter: updatedAdmin.amount,
+        description: `Deducted ₹${amount.toLocaleString("en-IN")} transferred to client ${targetUserName}`,
+      },
+      {
+        userId: targetUserId,
+        performedBy: adminId,
+        type: transactionType,
+        amount,
+        balanceBefore: userBalanceBefore,
+        balanceAfter: userBalanceAfter,
+        description,
+      },
+    ],
+    { session }
+  );
+
+  return updatedAdmin.amount;
+}
+
+/**
+ * Common Helper: Safely broadcasts updated Admin balance to all connected admins via Socket.IO
+ */
+function emitAdminBalanceUpdate(newAdminBalance: number, deductedAmount: number): void {
+  try {
+    const io = getIO();
+    io.to("admins").emit("adminBalanceUpdated", {
+      newAdminBalance,
+      deductedAmount,
+    });
+  } catch (e) {
+    console.error("Socket error on adminBalanceUpdated:", e);
+  }
+}
+
 // CREATE USER
 export const createUser = async (
   req: AuthRequest,
   res: Response
 ): Promise<void> => {
   try {
+    // 1. Mandatory Admin Authentication (NO fallback)
+    if (!req.user || req.user.role !== UserRole.ADMIN) {
+      res.status(403).json({
+        success: false,
+        message: "Forbidden: Administrator authentication is required",
+      });
+      return;
+    }
+    const adminId = req.user.id;
+
     const { name, city, email, mobile, password, amount } = req.body;
 
     if (!name || !city || !email || !mobile || !password) {
@@ -127,27 +233,57 @@ export const createUser = async (
 
     const hashedPassword = await bcrypt.hash(password.trim(), 10);
 
-    // SECURITY: Always enforce role as UserRole.CLIENT
-    const user = await User.create({
-      name: name.trim(),
-      city: city.trim(),
-      email: cleanEmail,
-      mobile: cleanMobile,
-      password: hashedPassword,
-      role: UserRole.CLIENT,
-      amount: amountCheck.value,
-    });
+    let user: any = null;
+    let newAdminBalance: number | null = null;
 
-    // Write initial balance audit ledger if balance > 0
     if (amountCheck.value > 0) {
-      await logTransaction({
-        userId: user._id,
-        performedBy: req.user?.id || "system",
-        type: TransactionType.INITIAL,
-        amount: amountCheck.value,
-        balanceBefore: 0,
-        balanceAfter: amountCheck.value,
-        description: "Initial client balance creation",
+      // Execute User creation and Admin deduction in a single ACID Transaction
+      const session = await mongoose.startSession();
+      session.startTransaction();
+
+      try {
+        user = new User({
+          name: name.trim(),
+          city: city.trim(),
+          email: cleanEmail,
+          mobile: cleanMobile,
+          password: hashedPassword,
+          role: UserRole.CLIENT,
+          amount: amountCheck.value,
+        });
+        await user.save({ session });
+
+        newAdminBalance = await transferBalanceFromAdmin({
+          adminId,
+          targetUserId: user._id,
+          targetUserName: user.name,
+          amount: amountCheck.value,
+          transactionType: TransactionType.INITIAL,
+          userBalanceBefore: 0,
+          userBalanceAfter: amountCheck.value,
+          description: "Initial client balance from Admin",
+          session,
+        });
+
+        await session.commitTransaction();
+      } catch (txError: any) {
+        await session.abortTransaction();
+        throw txError;
+      } finally {
+        session.endSession();
+      }
+
+      emitAdminBalanceUpdate(newAdminBalance, amountCheck.value);
+    } else {
+      // Amount is 0: standard user creation without balance transfer
+      user = await User.create({
+        name: name.trim(),
+        city: city.trim(),
+        email: cleanEmail,
+        mobile: cleanMobile,
+        password: hashedPassword,
+        role: UserRole.CLIENT,
+        amount: 0,
       });
     }
 
@@ -172,6 +308,7 @@ export const createUser = async (
       console.error("Socket error on userCreated:", e);
     }
 
+
     res.status(201).json({
       success: true,
       message: "User created successfully",
@@ -186,9 +323,26 @@ export const createUser = async (
       return;
     }
 
+    if (error?.hasErrorLabel?.("TransientTransactionError") || error?.code === 112) {
+      res.status(409).json({
+        success: false,
+        message: "Concurrent balance update conflict detected. Please retry.",
+      });
+      return;
+    }
+
+    if (error?.statusCode) {
+      res.status(error.statusCode).json({
+        success: false,
+        message: error.message,
+      });
+      return;
+    }
+
+    console.error("Create user error:", error);
     res.status(500).json({
       success: false,
-      message: "Failed to create user",
+      message: error?.message || "Failed to create user",
     });
   }
 };
@@ -216,7 +370,7 @@ export const getAllUsers = async (
       ];
     }
 
-    const [users, total] = await Promise.all([
+    const [users, total, adminUser] = await Promise.all([
       User.find(query)
         .select("-password")
         .sort({ _id: -1 })
@@ -224,12 +378,14 @@ export const getAllUsers = async (
         .limit(limit)
         .lean(),
       User.countDocuments(query),
+      User.findOne({ role: UserRole.ADMIN }).select("amount").lean(),
     ]);
 
     res.status(200).json({
       success: true,
       count: users.length,
       data: users,
+      adminBalance: adminUser?.amount ?? 0,
       pagination: {
         page,
         limit,
@@ -251,6 +407,16 @@ export const updateUser = async (
   res: Response
 ): Promise<void> => {
   try {
+    // 1. Mandatory Admin Authentication (NO fallback)
+    if (!req.user || req.user.role !== UserRole.ADMIN) {
+      res.status(403).json({
+        success: false,
+        message: "Forbidden: Administrator authentication is required",
+      });
+      return;
+    }
+    const adminId = req.user.id;
+
     const { id } = req.params;
     const { name, city, email, mobile, password, amount, amountToAdd } = req.body;
 
@@ -266,7 +432,7 @@ export const updateUser = async (
 
     const balanceBefore = existingUser.amount ?? 0;
 
-    // 1. Email collision check if email is provided
+    // Email collision check if email is provided
     if (email) {
       const cleanEmail = email.toLowerCase().trim();
       const emailExists = await User.findOne({ email: cleanEmail, _id: { $ne: id } });
@@ -279,7 +445,7 @@ export const updateUser = async (
       }
     }
 
-    // 2. Build atomic update operations
+    // Build atomic update operations
     const updateQuery: Record<string, any> = {};
     const setFields: Record<string, any> = {};
 
@@ -314,7 +480,7 @@ export const updateUser = async (
       setFields.password = await bcrypt.hash(password.trim(), 10);
     }
 
-    // 3. Financial Amount Handling
+    // Financial Amount Handling
     let isDeltaUpdate = false;
     let deltaAmount = 0;
     let isDirectSet = false;
@@ -342,6 +508,9 @@ export const updateUser = async (
       }
       setFields.amount = amountCheck.value;
       isDirectSet = true;
+      if (amountCheck.value > balanceBefore) {
+        deltaAmount = Math.round((amountCheck.value - balanceBefore) * 100) / 100;
+      }
     }
 
     if (Object.keys(setFields).length > 0) {
@@ -356,44 +525,76 @@ export const updateUser = async (
       return;
     }
 
-    // 4. Atomically execute update
-    const updatedUser = await User.findByIdAndUpdate(id, updateQuery, {
-      new: true,
-      runValidators: true,
-      select: "-password",
-    });
+    let updatedUser: any = null;
+    let newAdminBalance: number | null = null;
 
-    if (!updatedUser) {
-      res.status(404).json({
-        success: false,
-        message: "User not found",
-      });
-      return;
-    }
+    if (deltaAmount > 0) {
+      // Execute User credit and Admin deduction in a single ACID Transaction
+      const session = await mongoose.startSession();
+      session.startTransaction();
 
-    const balanceAfter = updatedUser.amount;
+      try {
+        updatedUser = await User.findByIdAndUpdate(id, updateQuery, {
+          new: true,
+          runValidators: true,
+          select: "-password",
+          session,
+        });
 
-    // 5. Financial Audit Trail
-    if (isDeltaUpdate) {
-      await logTransaction({
-        userId: updatedUser._id,
-        performedBy: req.user?.id || "admin",
-        type: TransactionType.CREDIT,
-        amount: deltaAmount,
-        balanceBefore,
-        balanceAfter,
-        description: `Balance credit delta of ₹${deltaAmount.toLocaleString()}`,
+        if (!updatedUser) {
+          const err: any = new Error("User not found");
+          err.statusCode = 404;
+          throw err;
+        }
+
+        newAdminBalance = await transferBalanceFromAdmin({
+          adminId,
+          targetUserId: updatedUser._id,
+          targetUserName: updatedUser.name,
+          amount: deltaAmount,
+          transactionType: TransactionType.CREDIT,
+          userBalanceBefore: balanceBefore,
+          userBalanceAfter: updatedUser.amount,
+          description: `Balance credit delta of ₹${deltaAmount.toLocaleString("en-IN")}`,
+          session,
+        });
+
+        await session.commitTransaction();
+      } catch (txError: any) {
+        await session.abortTransaction();
+        throw txError;
+      } finally {
+        session.endSession();
+      }
+
+      emitAdminBalanceUpdate(newAdminBalance, deltaAmount);
+    } else {
+      // No positive balance delta: standard update
+      updatedUser = await User.findByIdAndUpdate(id, updateQuery, {
+        new: true,
+        runValidators: true,
+        select: "-password",
       });
-    } else if (isDirectSet && balanceBefore !== balanceAfter) {
-      await logTransaction({
-        userId: updatedUser._id,
-        performedBy: req.user?.id || "admin",
-        type: TransactionType.SET,
-        amount: balanceAfter,
-        balanceBefore,
-        balanceAfter,
-        description: `Direct balance adjustment from ₹${balanceBefore.toLocaleString()} to ₹${balanceAfter.toLocaleString()}`,
-      });
+
+      if (!updatedUser) {
+        res.status(404).json({
+          success: false,
+          message: "User not found",
+        });
+        return;
+      }
+
+      if (isDirectSet && balanceBefore !== updatedUser.amount) {
+        await logTransaction({
+          userId: updatedUser._id,
+          performedBy: adminId,
+          type: TransactionType.SET,
+          amount: updatedUser.amount,
+          balanceBefore,
+          balanceAfter: updatedUser.amount,
+          description: `Direct balance adjustment from ₹${balanceBefore.toLocaleString("en-IN")} to ₹${updatedUser.amount.toLocaleString("en-IN")}`,
+        });
+      }
     }
 
     const userData = {
@@ -408,7 +609,7 @@ export const updateUser = async (
     };
 
     // 6. Scoped Realtime Events (Targeted to affected client and admins only)
-    if (isDeltaUpdate && deltaAmount !== 0) {
+    if (deltaAmount > 0 || (isDirectSet && balanceBefore !== updatedUser.amount)) {
       emitToTargetAndAdmins(updatedUser._id.toString(), "amountUpdated", {
         userId: updatedUser._id.toString(),
         addedAmount: deltaAmount,
@@ -435,9 +636,26 @@ export const updateUser = async (
       return;
     }
 
+    if (error?.hasErrorLabel?.("TransientTransactionError") || error?.code === 112) {
+      res.status(409).json({
+        success: false,
+        message: "Concurrent balance update conflict detected. Please retry.",
+      });
+      return;
+    }
+
+    if (error?.statusCode) {
+      res.status(error.statusCode).json({
+        success: false,
+        message: error.message,
+      });
+      return;
+    }
+
+    console.error("Update user error:", error);
     res.status(500).json({
       success: false,
-      message: "Failed to update user",
+      message: error?.message || "Failed to update user",
     });
   }
 };
@@ -519,6 +737,16 @@ export const addAmount = async (
   res: Response
 ): Promise<void> => {
   try {
+    // 1. Mandatory Admin Authentication (NO fallback)
+    if (!req.user || req.user.role !== UserRole.ADMIN) {
+      res.status(403).json({
+        success: false,
+        message: "Forbidden: Administrator authentication is required",
+      });
+      return;
+    }
+    const adminId = req.user.id;
+
     const { id } = req.params;
     const { amount } = req.body;
 
@@ -542,34 +770,49 @@ export const addAmount = async (
       return;
     }
 
+    let updatedUser: any = null;
+    let newAdminBalance: number = 0;
     const balanceBefore = existingUser.amount ?? 0;
 
-    const updatedUser = await User.findByIdAndUpdate(
-      id,
-      { $inc: { amount: numAmount } },
-      { new: true, select: "-password" }
-    );
+    // Execute User credit and Admin deduction in a single ACID Transaction
+    const session = await mongoose.startSession();
+    session.startTransaction();
 
-    if (!updatedUser) {
-      res.status(404).json({
-        success: false,
-        message: "User not found",
+    try {
+      updatedUser = await User.findByIdAndUpdate(
+        id,
+        { $inc: { amount: numAmount } },
+        { new: true, select: "-password", session }
+      );
+
+      if (!updatedUser) {
+        const err: any = new Error("User not found");
+        err.statusCode = 404;
+        throw err;
+      }
+
+      newAdminBalance = await transferBalanceFromAdmin({
+        adminId,
+        targetUserId: updatedUser._id,
+        targetUserName: updatedUser.name,
+        amount: numAmount,
+        transactionType: TransactionType.CREDIT,
+        userBalanceBefore: balanceBefore,
+        userBalanceAfter: updatedUser.amount,
+        description: `Manual balance addition of ₹${numAmount.toLocaleString("en-IN")}`,
+        session,
       });
-      return;
+
+      await session.commitTransaction();
+    } catch (txError: any) {
+      await session.abortTransaction();
+      throw txError;
+    } finally {
+      session.endSession();
     }
 
-    const balanceAfter = updatedUser.amount;
-
-    // Write audit trail
-    await logTransaction({
-      userId: updatedUser._id,
-      performedBy: req.user?.id || "admin",
-      type: TransactionType.CREDIT,
-      amount: numAmount,
-      balanceBefore,
-      balanceAfter,
-      description: `Manual balance addition of ₹${numAmount.toLocaleString()}`,
-    });
+    // Safely emit updated balance to admins
+    emitAdminBalanceUpdate(newAdminBalance, numAmount);
 
     // Scoped Socket.IO emission to target user and admins
     emitToTargetAndAdmins(updatedUser._id.toString(), "amountUpdated", {
@@ -580,13 +823,31 @@ export const addAmount = async (
 
     res.status(200).json({
       success: true,
-      message: `₹${numAmount.toLocaleString()} added successfully`,
+      message: `₹${numAmount.toLocaleString("en-IN")} added successfully`,
       data: updatedUser,
+      adminBalance: newAdminBalance,
     });
-  } catch (error) {
+  } catch (error: any) {
+    if (error?.hasErrorLabel?.("TransientTransactionError") || error?.code === 112) {
+      res.status(409).json({
+        success: false,
+        message: "Concurrent balance update conflict detected. Please retry.",
+      });
+      return;
+    }
+
+    if (error?.statusCode) {
+      res.status(error.statusCode).json({
+        success: false,
+        message: error.message,
+      });
+      return;
+    }
+
+    console.error("Add amount error:", error);
     res.status(500).json({
       success: false,
-      message: "Failed to add amount",
+      message: error?.message || "Failed to add amount",
     });
   }
 };

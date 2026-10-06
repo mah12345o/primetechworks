@@ -50,6 +50,7 @@ export const getClients = async (params?: {
             success: true,
             data: data.data || [],
             count: data.count,
+            adminBalance: typeof data.adminBalance === "number" ? data.adminBalance : 100000,
             pagination: data.pagination as PaginationMetadata | undefined,
         };
     } catch (error: unknown) {

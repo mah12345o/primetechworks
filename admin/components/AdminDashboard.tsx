@@ -15,15 +15,18 @@ export default function AdminDashboard({
   initialSearch = "",
   adminEmail = "admin@example.com",
   adminToken,
+  initialAdminBalance = 100000,
 }: {
   data: Client[];
   pagination?: PaginationMetadata;
   initialSearch?: string;
   adminEmail?: string;
   adminToken?: string;
+  initialAdminBalance?: number;
 }) {
   const router = useRouter();
   const [clientsList, setClientsList] = useState<Client[]>(data);
+  const [adminBalance, setAdminBalance] = useState<number>(initialAdminBalance);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingClient, setEditingClient] = useState<Client | null>(null);
   const [clientToDelete, setClientToDelete] = useState<Client | null>(null);
@@ -62,9 +65,20 @@ export default function AdminDashboard({
   }, [data]);
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setAdminBalance(initialAdminBalance);
+  }, [initialAdminBalance]);
+
+  useEffect(() => {
     const socket = io(process.env.NEXT_PUBLIC_SOCKET_URL, {
       transports: ["websocket", "polling"],
       auth: { token: adminToken },
+    });
+
+    socket.on("adminBalanceUpdated", ({ newAdminBalance }: { newAdminBalance: number }) => {
+      if (typeof newAdminBalance === "number") {
+        setAdminBalance(newAdminBalance);
+      }
     });
 
     socket.on("amountUpdated", ({ userId, newAmount }: { userId: string; newAmount: number }) => {
@@ -98,7 +112,7 @@ export default function AdminDashboard({
     return () => {
       socket.disconnect();
     };
-  }, []);
+  }, [adminToken]);
 
   return (
     <div className="w-full space-y-6">
@@ -115,7 +129,12 @@ export default function AdminDashboard({
         </div>
 
         <div className="flex items-center gap-3">
-          balance: 100000
+          <div className="inline-flex items-center gap-2 rounded-xl border border-emerald-200/90 bg-emerald-50/80 px-3.5 py-1.5 shadow-2xs">
+            <span className="text-xs font-semibold text-emerald-800">Admin Balance:</span>
+            <span className="text-sm font-bold text-emerald-700">
+              ₹{adminBalance.toLocaleString("en-IN")}
+            </span>
+          </div>
           <span className="text-xs sm:text-sm text-slate-600">
             {adminEmail}
           </span>
@@ -148,6 +167,7 @@ export default function AdminDashboard({
           setEditingClient(null);
         }}
         clientToEdit={editingClient}
+        adminBalance={adminBalance}
       />
 
       {/* Accessible Delete Confirmation Modal */}

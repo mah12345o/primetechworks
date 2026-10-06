@@ -11,6 +11,7 @@ interface ClientModalProps {
   isOpen: boolean;
   onClose: () => void;
   clientToEdit?: Client | null;
+  adminBalance?: number;
 }
 
 const initialFormData = {
@@ -26,6 +27,7 @@ export default function ClientModal({
   isOpen,
   onClose,
   clientToEdit,
+  adminBalance,
 }: ClientModalProps) {
   const router = useRouter();
   const [formData, setFormData] = useState(initialFormData);
@@ -377,9 +379,16 @@ export default function ClientModal({
             </div>
 
             <div>
-              <label className="block text-xs font-semibold uppercase tracking-wider text-zinc-700 dark:text-zinc-300">
-                Add Amount (+₹)
-              </label>
+              <div className="flex items-center justify-between">
+                <label className="block text-xs font-semibold uppercase tracking-wider text-zinc-700 dark:text-zinc-300">
+                  Add Amount (+₹)
+                </label>
+                {typeof adminBalance === "number" && (
+                  <span className="text-xs text-emerald-700 dark:text-emerald-400 font-medium">
+                    Available Admin: ₹{adminBalance.toLocaleString("en-IN")}
+                  </span>
+                )}
+              </div>
               <div className="relative mt-1.5">
                 <span className="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3.5 text-zinc-400 font-semibold text-sm">
                   +₹
@@ -403,6 +412,11 @@ export default function ClientModal({
                   className="w-full rounded-xl border border-zinc-300 bg-white py-2.5 pl-9 pr-3.5 text-sm text-zinc-900 placeholder:text-zinc-400 transition focus:border-emerald-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-50 dark:placeholder:text-zinc-500"
                 />
               </div>
+              {typeof adminBalance === "number" && Number(addAmountInput) > adminBalance && (
+                <p className="mt-1.5 text-xs font-medium text-red-500 dark:text-red-400">
+                  ⚠️ Amount exceeds Admin balance (₹{adminBalance.toLocaleString("en-IN")})
+                </p>
+              )}
               {Number(addAmountInput) > 0 && (
                 <div className="mt-2 flex items-center justify-between rounded-lg bg-emerald-100/70 dark:bg-emerald-900/40 px-3 py-1.5 text-xs font-medium text-emerald-800 dark:text-emerald-300">
                   <span>New Sum Total:</span>
@@ -421,9 +435,16 @@ export default function ClientModal({
           </div>
         ) : (
           <div>
-            <label className="block text-xs font-semibold uppercase tracking-wider text-zinc-600 dark:text-zinc-300">
-              Initial Amount (₹) <span className="text-zinc-400 font-normal lowercase">(optional)</span>
-            </label>
+            <div className="flex items-center justify-between">
+              <label className="block text-xs font-semibold uppercase tracking-wider text-zinc-600 dark:text-zinc-300">
+                Initial Amount (₹) <span className="text-zinc-400 font-normal lowercase">(optional)</span>
+              </label>
+              {typeof adminBalance === "number" && (
+                <span className="text-xs text-emerald-700 dark:text-emerald-400 font-medium">
+                  Available Admin: ₹{adminBalance.toLocaleString("en-IN")}
+                </span>
+              )}
+            </div>
             <div className="relative mt-1.5">
               <span className="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3.5 text-zinc-400 font-semibold text-sm">
                 ₹
@@ -439,6 +460,11 @@ export default function ClientModal({
                 className="w-full rounded-xl border border-zinc-300 bg-white py-2.5 pl-8 pr-3.5 text-sm text-zinc-900 placeholder:text-zinc-400 transition focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-500/20 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-50 dark:placeholder:text-zinc-500 dark:focus:border-blue-500"
               />
             </div>
+            {typeof adminBalance === "number" && Number(formData.amount) > adminBalance && (
+              <p className="mt-1.5 text-xs font-medium text-red-500 dark:text-red-400">
+                ⚠️ Amount exceeds Admin balance (₹{adminBalance.toLocaleString("en-IN")})
+              </p>
+            )}
             {fieldErrors.amount && (
               <p className="mt-1 text-xs font-medium text-red-500 dark:text-red-400">
                 {fieldErrors.amount}

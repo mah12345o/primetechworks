@@ -20,7 +20,7 @@ export default async function AdminPage(props: AdminPageProps) {
   const adminEmail = cookieStore.get("admin_email")?.value;
   const adminToken = cookieStore.get("admin_token")?.value;
 
-  const { data, pagination } = await getClients({
+  const { data, pagination, adminBalance } = await getClients({
     page,
     limit,
     search,
@@ -35,6 +35,7 @@ export default async function AdminPage(props: AdminPageProps) {
           initialSearch={search}
           adminEmail={adminEmail}
           adminToken={adminToken}
+          initialAdminBalance={adminBalance ?? 100000}
         />
       </div>
     </main>
