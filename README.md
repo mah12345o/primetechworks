@@ -151,3 +151,42 @@ When recording your demonstration for the evaluation team:
    - Log in as the newly created user on the right.
    - On the left, click **Edit** on that user, type `+500` in **Add Amount (+₹)**, and click **Save**.
    - Show that the Client Portal on the right **instantly reflects the new summed balance** with live feedback without any page refresh.
+
+
+
+
+
+
+
+
+
+
+const session = await mongoose.startSession();
+session.startTransaction()
+
+Atomic Admin Deduction =>
+Atomic Deduction & ACID Transaction
+
+
+const updatedAdmin = await User.findOneAndUpdate(
+  {
+    _id: adminId,
+    role: UserRole.ADMIN,
+    amount: { $gte: amountCheck.value },
+  },
+  { $inc: { amount: -amountCheck.value } }, // 👈 Admin से Minus
+  { new: true, session }
+);
+
+
+Transaction commit=> Backend Socket.IO => balance broadcast
+balance broadcast =>
+
+const io = getIO();
+io.to("admins").emit("adminBalanceUpdated", {
+  newAdminBalance: updatedAdmin.amount, // e.g. 99500
+  deductedAmount: amountCheck.value,
+});
+
+
+ setAdminBalance(newAdminBalance);

@@ -115,6 +115,7 @@ export default function AdminDashboard({
         </div>
 
         <div className="flex items-center gap-3">
+          balance: 100000
           <span className="text-xs sm:text-sm text-slate-600">
             {adminEmail}
           </span>

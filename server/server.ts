@@ -117,7 +117,7 @@ const startServer = async (): Promise<void> => {
         mobile: "9999999999",
         password: hashedPassword,
         role: UserRole.ADMIN,
-        amount: 0,
+        amount: 100000,
       });
       console.log(`Initial admin configured (${adminEmail}).`);
     }
